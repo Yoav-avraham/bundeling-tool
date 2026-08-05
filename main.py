@@ -6,7 +6,7 @@ from datetime import datetime
 import tomllib
 import tarfile
 
-
+COMMIT_SHA = os.getenv("GITHUB_SHA") or "example-sha"
 def create_parser():
 
     parser = argparse.ArgumentParser(description="Package bundling tool")
@@ -79,7 +79,6 @@ def extract_npm_dependencies(lock_path: str):
     return dependencies
 
 
-
 def extract_uv_dependencies(lock_path: str):
 
     dependencies = []
@@ -99,7 +98,6 @@ def extract_uv_dependencies(lock_path: str):
         dependencies.append(package_data)
 
     return dependencies
-
 
 
 def download_npm_dependencies(dependencies, output_dir):
@@ -126,7 +124,6 @@ def download_npm_dependencies(dependencies, output_dir):
             file.write(response.content)
 
         print(f"Downloaded: {filename}")
-
 
 
 def download_uv_dependencies(dependencies, output_dir):
@@ -178,7 +175,6 @@ def download_uv_dependencies(dependencies, output_dir):
                 print(f"Downloaded: {filename}")
 
 
-
 def create_bundle_archive(source_dir: str, output_file: str):
 
     with tarfile.open(output_file, "w:gz") as tar:
@@ -187,6 +183,14 @@ def create_bundle_archive(source_dir: str, output_file: str):
 
     print(f"Bundle created: {output_file}")
 
+
+def create_dependencies_archive(source_dir: str, output_file: str):
+    with tarfile.open(output_file, "w:gz") as tar:
+        for file in os.listdir(source_dir):
+            file_path = os.path.join(source_dir, file)
+            tar.add(file_path, arcname=file)
+
+    print(f"Dependencies archive created: {output_file}")
 
 
 def extract_bundle_archive(bundle_file: str, output_dir: str):
@@ -213,11 +217,9 @@ def export_project(project_path):
         print("No lock files found")
         return
 
-    timestamp = datetime.now().strftime(
-        "%Y%m%d_%H%M%S"
-    )
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    bundle_dir = os.path.join("bundled_packages", timestamp)
+    bundle_dir = os.path.join(".", timestamp)
 
     npm_dir = os.path.join(bundle_dir, "npm")
 
@@ -239,14 +241,26 @@ def export_project(project_path):
 
         download_uv_dependencies(dependencies, uv_dir)
 
-    create_bundle_archive(
-        bundle_dir,
-        f"{timestamp}.tar.gz"
-    )
+    # Create npm-dependencies.tgz
+    npm_archive = os.path.join(bundle_dir, "npm-dependencies.tgz")
+
+    if os.path.exists(npm_dir) and os.listdir(npm_dir):
+        create_dependencies_archive(npm_dir, npm_archive )
+
+        # remove original npm folder
+        for file in os.listdir(npm_dir):
+            os.remove(os.path.join(npm_dir, file))
+
+        os.rmdir(npm_dir)
+
+    # Create final bundle
+    create_bundle_archive(bundle_dir, f"{timestamp}-{COMMIT_SHA}.tar.gz")
+
 
 def import_bundle(bundle_file):
 
     extract_bundle_archive(bundle_file, "imported_bundle")
+
 
 def main():
 
@@ -263,7 +277,6 @@ def main():
     elif args.command == "import":
 
         import_bundle(args.bundle_file)
-
 
 
 if __name__ == "__main__":
