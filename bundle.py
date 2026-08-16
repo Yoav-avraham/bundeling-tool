@@ -25,7 +25,7 @@ def create_parser():
     export_parser = subparsers.add_parser("export", help="Export project dependencies")
     export_parser.add_argument("project_path", help="Path to project directory")
     export_parser.add_argument("--no-cleanup", action="store_true", help="Keep extracted dependency folders after creating archives")
-    export_parser.add_argument("--commit-sha" ,help="Commit sha of a project ")
+    export_parser.add_argument("--commit-sha" ,help="Commit SHA to compare current dependencies against")
     
     # import parser
     import_parser = subparsers.add_parser("import", help="Import bundle archive")
@@ -86,9 +86,14 @@ def extract_npm_dependencies(lock_path: str):
     dependencies = []
     dependencies_set = set()
 
-    # open the json file and load it into a dict
-    with open(lock_path, "r", encoding="utf-8") as file:
-        lock_data = json.load(file)
+    try:
+        # open the json file and load it into a dict
+        with open(lock_path, "r", encoding="utf-8") as file:
+            lock_data = json.load(file)
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"Failed to read npm lock files: {lock_path}"
+        ) from error
 
     # check each item in the dict
     for path, info in lock_data["packages"].items():
@@ -121,10 +126,15 @@ def extract_uv_dependencies(lock_path: str):
     # init list for dependencies
     dependencies = []
     dependencies_set = set()
+    try:  
 
-    # open the uv.lock file and load it into a dict
-    with open(lock_path, "rb") as file:
-        lock_data = tomllib.load(file)
+        # open the uv.lock file and load it into a dict
+        with open(lock_path, "rb") as file:
+            lock_data = tomllib.load(file)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise RuntimeError(
+            f"Failed to read uv lock files {lock_path}"
+        ) from error
 
     # check each item in the dict
     for package in lock_data.get("package", []):
@@ -175,10 +185,14 @@ def download_npm_dependencies(dependencies, output_dir, exists_set = None):
         # create path for dependency package file
         filename = (dependency["name"].replace("/", "_") + "-" + dependency["version"] + ".tgz")
         file_path = os.path.join(output_dir, filename)
-        
-        # send request in order to download and raise error if status is bad
-        response = requests.get(url)
-        response.raise_for_status()
+        try:
+            # send request in order to download and raise error if status is bad
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+        except requests.RequestException as error:
+            raise RuntimeError(
+                f"Failed to download dependency from {url}"
+                ) from error
 
         # create the file and write the dependency
         with open(file_path, "wb") as file:
@@ -224,10 +238,15 @@ def download_uv_dependencies(dependencies, output_dir, exists_set=None):
                 print("Skippng - no url")
                 continue
             
-            # send request to download the dependency from the url
-            # raise error if bad status
-            response = requests.get(url)
-            response.raise_for_status()
+            try:
+                # send request to download the dependency from the url
+                # raise error if bad status
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+            except requests.RequestException as error:
+                raise RuntimeError(
+                    f"Failed to download dependency from {url}"
+                    ) from error
 
             # create the dependency file
             with open(file_path, "wb") as file:
@@ -255,10 +274,16 @@ def download_uv_dependencies(dependencies, output_dir, exists_set=None):
                             print(f"Skipping: {filename} - already downloaded")
                             continue
                 
-                # send request to download the dependency from the url
-                # raise error if bad status 
-                response = requests.get(url)
-                response.raise_for_status()
+                try:
+                    
+                    # send request to download the dependency from the url
+                    # raise error if bad status 
+                    response = requests.get(url, timeout=30)
+                    response.raise_for_status()
+                except requests.RequestException as error:
+                    raise RuntimeError(
+                        f"Failed to download dependency from {url}"
+                    ) from error
 
                 # create the dependency file
                 with open(file_path, "wb") as file:
@@ -267,18 +292,65 @@ def download_uv_dependencies(dependencies, output_dir, exists_set=None):
                 # print what dependency was downloaded
                 print(f"Downloaded: {filename}")
 
+def gather_npm_dependencies_from_locks(lock_files):
+    """
+        The function takes a list of npm lock files and gather all of
+        the dependencies into a list and set
+    """
+    
+    npm_dependencies = []
+    npm_set = set()
+    
+    # gather the dependencies for each npm lockfile
+    for lock_file in lock_files:
+    
+        # print message and extract dependencies
+        print(f"Processing npm: {lock_file}")
+        dependencies, dependencies_set = extract_npm_dependencies(lock_file)
+        
+        # add the dependencies to the set and list
+        npm_dependencies.extend(dependencies)
+        npm_set.update(dependencies_set)
+        
+    return npm_dependencies, npm_set
+
+def gather_uv_dependencies_from_lockfiles(lock_files):
+    """
+        The function takes a list of uv lock files and gather all of
+        the dependencies into a list and set
+    """
+    
+    uv_dependencies = []
+    uv_set = set()
+    
+    for lock_file in lock_files:
+        
+        # print message and extract dependencies
+        print(f"Processing uv: {lock_file}")
+        dependencies, dependencies_set = extract_uv_dependencies(lock_file)
+        
+        # add the dependencies to the set and list
+        uv_dependencies.extend(dependencies)
+        uv_set.update(dependencies_set)
+        
+    return uv_dependencies, uv_set
+        
+       
 
 def create_bundle_archive(source_dir: str, output_file: str):
     """
         The function takes the directory that contains
         the dependencies and zip it into a bundle
     """
-    
-    # create a gz gile
-    with tarfile.open(output_file, "w:gz") as tar:
-
-        # add the dir 
-        tar.add(source_dir, arcname=os.path.basename(source_dir))
+    try:
+        # create a gz gile
+        with tarfile.open(output_file, "w:gz") as tar:
+            # add the dir 
+            tar.add(source_dir, arcname=os.path.basename(source_dir))
+    except (tarfile.TarError, OSError) as error:
+        raise RuntimeError(
+            f"Failed to create bundle archive: {source_dir}"
+        ) from error
         
     print(f"Bundle created: {output_file}")
 
@@ -287,13 +359,17 @@ def create_dependencies_archive(source_dir: str, output_file: str):
     """
         The function creates an archive of every dependency
     """
-    
-    # create a new gz fie and add all of the files in the dir
-    with tarfile.open(output_file, "w:gz") as tar:
-        for file in os.listdir(source_dir):
-            file_path = os.path.join(source_dir, file)
-            tar.add(file_path, arcname=file)
-
+    try:
+        # create a new gz fie and add all of the files in the dir
+        with tarfile.open(output_file, "w:gz") as tar:
+            for file in os.listdir(source_dir):
+                file_path = os.path.join(source_dir, file)
+                tar.add(file_path, arcname=file)
+    except (tarfile.TarError, OSError) as error:
+        raise RuntimeError(
+            f"Failed to create dependencies archive: {source_dir}"
+        ) from error
+        
     print(f"Dependencies archive created: {output_file}")
 
 
@@ -309,10 +385,15 @@ def extract_bundle_archive(bundle_file: str, output_dir: str):
     # create dir for the bundle content
     os.makedirs(output_dir, exist_ok=True)
     
-    # open the gz file and extract into the dir
-    with tarfile.open(bundle_file, "r:gz") as tar:
-        
-        tar.extractall(path=output_dir)
+    try:
+        # open the gz file and extract into the dir
+        with tarfile.open(bundle_file, "r:gz") as tar:
+            
+            tar.extractall(path=output_dir)
+    except (tarfile.TarError, OSError) as error:
+        raise RuntimeError(
+            f"Failed to extract bundle: {bundle_file}"
+        ) from error
 
     print(f"Bundle extracted to: {output_dir}")
 
@@ -342,105 +423,69 @@ def export_project(project_path, no_cleanup=False, commit_sha=None):
     npm_dir = os.path.join(bundle_dir, "npm")
     uv_dir = os.path.join(bundle_dir, "uv")
 
-    npm_dependencies = []
-    npm_set = set()
-    
-    uv_dependencies = []
-    uv_set = set()
-    
-    # gather the dependencies for each npm lockfile
-    for lock_file in npm_lock_files:
-
-        print(f"Processing npm: {lock_file}")
-
-        dependencies, dependencies_set = extract_npm_dependencies(lock_file)
-        npm_dependencies.extend(dependencies)
-        npm_set.update(dependencies_set)
-
-    # download the dependencies for each uv lockfile
-    for lock_file in uv_lock_files:
-    
-        print(f"Processing uv: {lock_file}")
-    
-        dependencies, dependencies_set = extract_uv_dependencies(lock_file)
-        uv_dependencies.extend(dependencies)
-        uv_set.update(dependencies_set)
+    # gather all of the dependencies from lockfiles
+    npm_dependencies, npm_set = gather_npm_dependencies_from_locks(npm_lock_files)
+    uv_dependencies, uv_set = gather_uv_dependencies_from_lockfiles(uv_lock_files)
     
     if commit_sha:
         
         # clone the git repo from a specific sha
         git_path = 'remote_git'
         
+        # check if theres already previous git repo
         if os.path.exists(git_path):
             shutil.rmtree(git_path, onexc=remove_readonly)
+        
+        try:
             
-        fetch_git_by_sha(GIT_URL, commit_sha)
+            # clone the git repo of the specific sha
+            fetch_git_by_sha(GIT_URL, commit_sha)
             
-        # init sets
-        git_npm_set = set()
-        git_uv_set = set()
-        
-        # get lock files
-        git_npm_lock_files, git_uv_lock_files = find_lock_files(git_path)
-        
-        for lock_file in git_npm_lock_files:
+            # get lock files
+            git_npm_lock_files, git_uv_lock_files = find_lock_files(git_path)
             
-            print(f"Processing remote npm: {lock_file}")
-            dependencies, dependencies_set = extract_npm_dependencies(lock_file)
-            git_npm_set.update(dependencies_set)
-    
-        for lock_file in git_uv_lock_files:
-        
-            print(f"Processing remote uv: {lock_file}")
-        
-            dependencies, dependencies_set = extract_uv_dependencies(lock_file)
-            git_uv_set.update(dependencies_set)
-        
-        # cleanup the git repo
-        shutil.rmtree(git_path, onexc=remove_readonly)
-        print("Cleanup remote git repo , dependencies fetched")
-        
-        # download the dependencies
-        download_npm_dependencies(npm_dependencies, npm_dir, git_npm_set)
-        download_uv_dependencies(uv_dependencies, uv_dir, git_uv_set)
-        
+            # gather all of the dependencies in 
+            git_npm_dependencies, git_npm_set = gather_npm_dependencies_from_locks(git_npm_lock_files)
+            git_uv_dependencies, git_uv_set = gather_uv_dependencies_from_lockfiles(git_uv_lock_files)
+            
+            # download the dependencies
+            download_npm_dependencies(npm_dependencies, npm_dir, git_npm_set)
+            download_uv_dependencies(uv_dependencies, uv_dir, git_uv_set)   
+        finally:
+            if os.path.exists(git_path):
+                shutil.rmtree(git_path, onexc=remove_readonly)
     else:
-           
         # download all of the dependencies
         download_npm_dependencies(npm_dependencies, npm_dir)
         download_uv_dependencies(uv_dependencies, uv_dir)
     
+    # if theres no uv dependencies remove the dir
     if len(os.listdir(uv_dir)) == 0:
         print("No uv dependencies required download")
         os.rmdir(uv_dir)
-        
+    
+    #  if theres no npm dependencies remove the dir
     if len(os.listdir(npm_dir)) == 0:
         print("No npm dependencies required download")
         os.rmdir(npm_dir)
-        
     else:
-        # Create npm-dependencies.tgz
+        # create npm-dependencies.tgz
         npm_archive = os.path.join(bundle_dir, "npm-dependencies.tgz")
-
-        if os.path.exists(npm_dir) and os.listdir(npm_dir):
             
-            create_dependencies_archive(npm_dir, npm_archive)
-
-            # remove original npm folder
-            for file in os.listdir(npm_dir):
-                os.remove(os.path.join(npm_dir, file))
-
-            os.rmdir(npm_dir)
+        create_dependencies_archive(npm_dir, npm_archive)
+        
+        # remove original npm dir
+        shutil.rmtree(npm_dir)
             
     if len(os.listdir(bundle_dir)):
     
-        # Create final bundle
+        # create final bundle
         create_bundle_archive(bundle_dir, f"{timestamp}-{COMMIT_SHA}.tar.gz")
         
     else:
         print("No dependencies required download")
 
-    # Cleanup the extracted folder
+    # cleanup the extracted folder
     if not no_cleanup:
         shutil.rmtree(bundle_dir)
         
@@ -453,39 +498,64 @@ def import_bundle(bundle_file):
     extract_bundle_archive(bundle_file, "imported_bundle")
     
 def fetch_git_by_sha(git_url, commit_sha):
+    """
+        The function clones a repo from a git url and specific commit
+    """
+    
+    # name for the dirs and archive
     git_path = "remote_git"
+    temp_git = "temp_git"
+    repo_archive = "repo.tar"   
 
-    subprocess.run(["git", "clone", "--no-checkout", git_url, "temp_git"],check=True)
+    try:
+        # clone the repo and fetch the specific commit as an archive
+        subprocess.run(["git", "clone", "--no-checkout", git_url, temp_git],check=True)
+        subprocess.run(["git", "-C", "temp_git", "archive", "--format=tar", commit_sha, "-o", f"../{repo_archive}"],check=True)
 
-    subprocess.run(["git", "-C", "temp_git", "archive", "--format=tar", commit_sha, "-o", "../repo.tar"],check=True)
+        # make dir for the unzipped archive
+        os.makedirs(git_path, exist_ok=True)
 
-    os.makedirs(git_path, exist_ok=True)
+        # open the repo archive 
+        with tarfile.open(repo_archive, "r") as tar:
+            tar.extractall(git_path)   
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"Failed to fetch git commit {commit_sha}") from error
+    finally:
+        # remove the archive if it exists
+        if os.path.exists(repo_archive):
+            os.remove(repo_archive)
 
-    with tarfile.open("repo.tar", "r") as tar:
-        tar.extractall(git_path)
-        
-    os.remove("repo.tar")
-    shutil.rmtree("temp_git", onexc=remove_readonly)
+        # remove the temporary git repo if it exists
+        if os.path.exists(temp_git):
+            shutil.rmtree(temp_git, onexc=remove_readonly)
+
 
 def remove_readonly(func, path, exc):
+    """
+        The function helps removing a full dir
+    """
     os.chmod(path, stat.S_IWRITE)
     func(path)
+
 
 def main():
 
     # creates general parser and get the args
     parser = create_parser()
     args = parser.parse_args()
+    try:
+        # if the command is export use the export function
+        if args.command == "export":
 
-    # if the command is export use the export function
-    if args.command == "export":
+            export_project(args.project_path, args.no_cleanup, args.commit_sha)
 
-        export_project(args.project_path, args.no_cleanup, args.commit_sha)
-
-    # if the function is import use the import function
-    elif args.command == "import":
-        
-        import_bundle(args.bundle_file)
+        # if the function is import use the import function
+        elif args.command == "import":
+            
+            import_bundle(args.bundle_file)
+    except (FileNotFoundError, NotADirectoryError, RuntimeError) as error:
+        print(f"error: {error}")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
