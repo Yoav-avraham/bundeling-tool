@@ -6,9 +6,11 @@ from datetime import datetime
 import tomllib
 import tarfile
 import shutil
+import subprocess
+import stat
 
 COMMIT_SHA = os.getenv("GITHUB_SHA") or "example-sha"
-
+GIT_URL = "https://github.com/Yoav-avraham/bundeling-tool.git"
 
 def create_parser():
     """
@@ -23,6 +25,7 @@ def create_parser():
     export_parser = subparsers.add_parser("export", help="Export project dependencies")
     export_parser.add_argument("project_path", help="Path to project directory")
     export_parser.add_argument("--no-cleanup", action="store_true", help="Keep extracted dependency folders after creating archives")
+    export_parser.add_argument("--commit-sha" ,help="Commit sha of a project ")
     
     # import parser
     import_parser = subparsers.add_parser("import", help="Import bundle archive")
@@ -141,10 +144,13 @@ def extract_uv_dependencies(lock_path: str):
     return dependencies , dependencies_set
 
 
-def download_npm_dependencies(dependencies, output_dir, exists_set = set()):
+def download_npm_dependencies(dependencies, output_dir, exists_set = None):
     """
         The function download the npm dependencies from the dependencies list
     """
+    
+    if exists_set is None: 
+        exists_set=set()
 
     # create dir for the dependencies
     os.makedirs(output_dir, exist_ok=True)
@@ -184,10 +190,12 @@ def download_npm_dependencies(dependencies, output_dir, exists_set = set()):
         exists_set.add(package)
 
 
-def download_uv_dependencies(dependencies, output_dir, exists_set=set()):
+def download_uv_dependencies(dependencies, output_dir, exists_set=None):
     """
         The function download the uv dependencies from the dependencies list
     """
+    if exists_set is None:
+        exists_set=set()
     
     # create dir for the dependencies
     os.makedirs(output_dir, exist_ok=True)
@@ -293,7 +301,7 @@ def extract_bundle_archive(bundle_file: str, output_dir: str):
     """
         The function unzip a bundle
     """
-
+    
     # validates the bundle's path
     if not os.path.exists(bundle_file):
         raise FileNotFoundError(f"Bundle file does not exist: {bundle_file}")
@@ -309,7 +317,7 @@ def extract_bundle_archive(bundle_file: str, output_dir: str):
     print(f"Bundle extracted to: {output_dir}")
 
 
-def export_project(project_path, no_cleanup=False):
+def export_project(project_path, no_cleanup=False, commit_sha=None):
     """
         The function handles the export command from getting the dependencies
         from the lockfiles to downloading it and creating a bundle
@@ -348,36 +356,89 @@ def export_project(project_path, no_cleanup=False):
         dependencies, dependencies_set = extract_npm_dependencies(lock_file)
         npm_dependencies.extend(dependencies)
         npm_set.update(dependencies_set)
-    
-    # download all   
-    download_npm_dependencies(npm_dependencies, npm_dir)
 
     # download the dependencies for each uv lockfile
     for lock_file in uv_lock_files:
-
+    
         print(f"Processing uv: {lock_file}")
-
+    
         dependencies, dependencies_set = extract_uv_dependencies(lock_file)
         uv_dependencies.extend(dependencies)
         uv_set.update(dependencies_set)
-    print(npm_set)
-    print(uv_set)
-    download_uv_dependencies(uv_dependencies, uv_dir, uv_set)
-
-    # Create npm-dependencies.tgz
-    npm_archive = os.path.join(bundle_dir, "npm-dependencies.tgz")
-
-    if os.path.exists(npm_dir) and os.listdir(npm_dir):
-        create_dependencies_archive(npm_dir, npm_archive)
-
-        # remove original npm folder
-        for file in os.listdir(npm_dir):
-            os.remove(os.path.join(npm_dir, file))
-
+    
+    if commit_sha:
+        
+        # clone the git repo from a specific sha
+        git_path = 'remote_git'
+        
+        if os.path.exists(git_path):
+            shutil.rmtree(git_path, onexc=remove_readonly)
+            
+        fetch_git_by_sha(GIT_URL, commit_sha)
+            
+        # init sets
+        git_npm_set = set()
+        git_uv_set = set()
+        
+        # get lock files
+        git_npm_lock_files, git_uv_lock_files = find_lock_files(git_path)
+        
+        for lock_file in git_npm_lock_files:
+            
+            print(f"Processing remote npm: {lock_file}")
+            dependencies, dependencies_set = extract_npm_dependencies(lock_file)
+            git_npm_set.update(dependencies_set)
+    
+        for lock_file in git_uv_lock_files:
+        
+            print(f"Processing remote uv: {lock_file}")
+        
+            dependencies, dependencies_set = extract_uv_dependencies(lock_file)
+            git_uv_set.update(dependencies_set)
+        
+        # cleanup the git repo
+        shutil.rmtree(git_path, onexc=remove_readonly)
+        print("Cleanup remote git repo , dependencies fetched")
+        
+        # download the dependencies
+        download_npm_dependencies(npm_dependencies, npm_dir, git_npm_set)
+        download_uv_dependencies(uv_dependencies, uv_dir, git_uv_set)
+        
+    else:
+           
+        # download all of the dependencies
+        download_npm_dependencies(npm_dependencies, npm_dir)
+        download_uv_dependencies(uv_dependencies, uv_dir)
+    
+    if len(os.listdir(uv_dir)) == 0:
+        print("No uv dependencies required download")
+        os.rmdir(uv_dir)
+        
+    if len(os.listdir(npm_dir)) == 0:
+        print("No npm dependencies required download")
         os.rmdir(npm_dir)
+        
+    else:
+        # Create npm-dependencies.tgz
+        npm_archive = os.path.join(bundle_dir, "npm-dependencies.tgz")
 
-    # Create final bundle
-    create_bundle_archive(bundle_dir, f"{timestamp}-{COMMIT_SHA}.tar.gz")
+        if os.path.exists(npm_dir) and os.listdir(npm_dir):
+            
+            create_dependencies_archive(npm_dir, npm_archive)
+
+            # remove original npm folder
+            for file in os.listdir(npm_dir):
+                os.remove(os.path.join(npm_dir, file))
+
+            os.rmdir(npm_dir)
+            
+    if len(os.listdir(bundle_dir)):
+    
+        # Create final bundle
+        create_bundle_archive(bundle_dir, f"{timestamp}-{COMMIT_SHA}.tar.gz")
+        
+    else:
+        print("No dependencies required download")
 
     # Cleanup the extracted folder
     if not no_cleanup:
@@ -390,7 +451,25 @@ def import_bundle(bundle_file):
     """
     
     extract_bundle_archive(bundle_file, "imported_bundle")
+    
+def fetch_git_by_sha(git_url, commit_sha):
+    git_path = "remote_git"
 
+    subprocess.run(["git", "clone", "--no-checkout", git_url, "temp_git"],check=True)
+
+    subprocess.run(["git", "-C", "temp_git", "archive", "--format=tar", commit_sha, "-o", "../repo.tar"],check=True)
+
+    os.makedirs(git_path, exist_ok=True)
+
+    with tarfile.open("repo.tar", "r") as tar:
+        tar.extractall(git_path)
+        
+    os.remove("repo.tar")
+    shutil.rmtree("temp_git", onexc=remove_readonly)
+
+def remove_readonly(func, path, exc):
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 def main():
 
@@ -401,7 +480,7 @@ def main():
     # if the command is export use the export function
     if args.command == "export":
 
-        export_project(args.project_path, args.no_cleanup)
+        export_project(args.project_path, args.no_cleanup, args.commit_sha)
 
     # if the function is import use the import function
     elif args.command == "import":
