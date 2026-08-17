@@ -25,7 +25,8 @@ def create_parser():
     export_parser = subparsers.add_parser("export", help="Export project dependencies")
     export_parser.add_argument("project_path", help="Path to project directory")
     export_parser.add_argument("--no-cleanup", action="store_true", help="Keep extracted dependency folders after creating archives")
-    export_parser.add_argument("--commit-sha" ,help="Commit SHA to compare current dependencies against")
+    export_parser.add_argument("--commit-sha" , help="Commit SHA to compare current dependencies against")
+    export_parser.add_argument("--latest-commit", action="store_true", help="Get the latest Commit SHA to compare current dependencies against")
     
     # import parser
     import_parser = subparsers.add_parser("import", help="Import bundle archive")
@@ -398,7 +399,7 @@ def extract_bundle_archive(bundle_file: str, output_dir: str):
     print(f"Bundle extracted to: {output_dir}")
 
 
-def export_project(project_path, no_cleanup=False, commit_sha=None):
+def export_project(project_path, no_cleanup=False, commit_sha=None, latest_commit=False):
     """
         The function handles the export command from getting the dependencies
         from the lockfiles to downloading it and creating a bundle
@@ -427,7 +428,7 @@ def export_project(project_path, no_cleanup=False, commit_sha=None):
     npm_dependencies, npm_set = gather_npm_dependencies_from_locks(npm_lock_files)
     uv_dependencies, uv_set = gather_uv_dependencies_from_lockfiles(uv_lock_files)
     
-    if commit_sha:
+    if commit_sha or latest_commit:
         
         # clone the git repo from a specific sha
         git_path = 'remote_git'
@@ -439,7 +440,7 @@ def export_project(project_path, no_cleanup=False, commit_sha=None):
         try:
             
             # clone the git repo of the specific sha
-            fetch_git_by_sha(GIT_URL, commit_sha)
+            fetch_git_by_sha(GIT_URL, commit_sha, latest_commit)
             
             # get lock files
             git_npm_lock_files, git_uv_lock_files = find_lock_files(git_path)
@@ -497,7 +498,7 @@ def import_bundle(bundle_file):
     
     extract_bundle_archive(bundle_file, "imported_bundle")
     
-def fetch_git_by_sha(git_url, commit_sha):
+def fetch_git_by_sha(git_url, commit_sha, latest_commit=False):
     """
         The function clones a repo from a git url and specific commit
     """
@@ -510,6 +511,11 @@ def fetch_git_by_sha(git_url, commit_sha):
     try:
         # clone the repo and fetch the specific commit as an archive
         subprocess.run(["git", "clone", "--no-checkout", git_url, temp_git],check=True)
+        
+        commit_sha = "HEAD^" if latest_commit else commit_sha
+        
+        print(f"Processing the commit: {commit_sha}")
+        
         subprocess.run(["git", "-C", "temp_git", "archive", "--format=tar", commit_sha, "-o", f"../{repo_archive}"],check=True)
 
         # make dir for the unzipped archive
@@ -547,7 +553,7 @@ def main():
         # if the command is export use the export function
         if args.command == "export":
 
-            export_project(args.project_path, args.no_cleanup, args.commit_sha)
+            export_project(args.project_path, args.no_cleanup, args.commit_sha, args.latest_commit)
 
         # if the function is import use the import function
         elif args.command == "import":
