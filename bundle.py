@@ -155,143 +155,140 @@ def extract_uv_dependencies(lock_path: str):
     return dependencies , dependencies_set
 
 
-def download_npm_dependencies(dependencies, output_dir, exists_set = None):
+def download_npm_dependencies(dependencies, output_dir, exists_set=None):
     """
-        The function download the npm dependencies from the dependencies list
+        The function downloads the npm dependencies from the dependencies list
     """
-    
-    if exists_set is None: 
-        exists_set=set()
 
-    # create dir for the dependencies
+    if exists_set is None:
+        exists_set = set()
+
     os.makedirs(output_dir, exist_ok=True)
 
-    # try to install every dependency 
+    failed_dependencies = []
+
     for dependency in dependencies:
 
-        # get the resolved url in order to install the dependency
         url = dependency.get("resolved")
 
-        # if there isnt url skip
         if not url:
             print(f"Skipping {dependency['name']} - no URL")
             continue
-        
-        package = f"{dependency["name"]}@{dependency["version"]}"
-        
+
+        package = f"{dependency['name']}@{dependency['version']}"
+
         if package in exists_set:
-            print(f"Skipping {package} already exists")
+            print(f"Skipping {package} - already exists")
             continue
-        
-        # create path for dependency package file
-        filename = (dependency["name"].replace("/", "_") + "-" + dependency["version"] + ".tgz")
+
+        filename = (
+            dependency["name"].replace("/", "_")
+            + "-"
+            + dependency["version"]
+            + ".tgz"
+        )
+
         file_path = os.path.join(output_dir, filename)
+
         try:
-            # send request in order to download and raise error if status is bad
             response = requests.get(url, timeout=30)
             response.raise_for_status()
         except requests.RequestException as error:
-            raise RuntimeError(
-                f"Failed to download dependency from {url}"
-                ) from error
+            print(f"Failed to download {package}: {error}")
+            failed_dependencies.append(package)
+            continue
 
-        # create the file and write the dependency
         with open(file_path, "wb") as file:
             file.write(response.content)
 
-        # print what package was downloaded
         print(f"Downloaded: {filename}")
-        
         exists_set.add(package)
 
+    if failed_dependencies:
+        raise RuntimeError(
+            "Failed to download dependencies: "
+            + ", ".join(failed_dependencies)
+        )
 
 def download_uv_dependencies(dependencies, output_dir, exists_set=None):
     """
-        The function download the uv dependencies from the dependencies list
+        The function downloads the uv dependencies from the dependencies list
     """
+
     if exists_set is None:
-        exists_set=set()
-    
-    # create dir for the dependencies
+        exists_set = set()
+
     os.makedirs(output_dir, exist_ok=True)
 
-    # try to install every dependency
+    failed_dependencies = []
+
     for dependency in dependencies:
-        
-        package = f"{dependency["name"]}@{dependency["version"]}"
-        
+
+        package = f"{dependency['name']}@{dependency['version']}"
+
         if package in exists_set:
             print(f"Skipping: {package} - already downloaded")
             continue
-        
-        # for every wheel file in the wheels list try to installs
+
+        dependency_failed = False
+
         for wheel in dependency.get("wheels", []):
 
-            # get the url
             url = wheel.get("url")
-            
-            # create the filename from the path of the url
+
+            if not url:
+                print(f"Skipping {package} - no URL")
+                dependency_failed = True
+                continue
+
             filename = os.path.basename(url)
             file_path = os.path.join(output_dir, filename)
-            
-            # skip if there is no url
-            if not url:
-                print("Skippng - no url")
-                continue
-            
+
             try:
-                # send request to download the dependency from the url
-                # raise error if bad status
                 response = requests.get(url, timeout=30)
                 response.raise_for_status()
             except requests.RequestException as error:
-                raise RuntimeError(
-                    f"Failed to download dependency from {url}"
-                    ) from error
+                print(f"Failed to download {package}: {error}")
+                dependency_failed = True
+                continue
 
-            # create the dependency file
             with open(file_path, "wb") as file:
                 file.write(response.content)
 
-            # print what dependency was downloaded
             print(f"Downloaded: {filename}")
 
-        # get the sdist url if there is one
         sdist = dependency.get("sdist")
 
-        # if there is sdist url
         if sdist:
-            
-            # take the url check if theres one and download if so
             url = sdist.get("url")
+
             if url:
-                
-                # create the filename from the path of the url
                 filename = os.path.basename(url)
                 file_path = os.path.join(output_dir, filename)
-                
-                # check if dependency already exists
-                if os.path.exists(file_path):
-                            print(f"Skipping: {filename} - already downloaded")
-                            continue
-                
-                try:
-                    
-                    # send request to download the dependency from the url
-                    # raise error if bad status 
-                    response = requests.get(url, timeout=30)
-                    response.raise_for_status()
-                except requests.RequestException as error:
-                    raise RuntimeError(
-                        f"Failed to download dependency from {url}"
-                    ) from error
 
-                # create the dependency file
-                with open(file_path, "wb") as file:
-                    file.write(response.content)
-                    
-                # print what dependency was downloaded
-                print(f"Downloaded: {filename}")
+                if not os.path.exists(file_path):
+                    try:
+                        response = requests.get(url, timeout=30)
+                        response.raise_for_status()
+                    except requests.RequestException as error:
+                        print(f"Failed to download {package}: {error}")
+                        dependency_failed = True
+                    else:
+                        with open(file_path, "wb") as file:
+                            file.write(response.content)
+
+                        print(f"Downloaded: {filename}")
+
+        if dependency_failed:
+            failed_dependencies.append(package)
+        else:
+            exists_set.add(package)
+
+    if failed_dependencies:
+        raise RuntimeError(
+            "Failed to download dependencies: "
+            + ", ".join(failed_dependencies)
+        )
 
 def gather_npm_dependencies_from_locks(lock_files):
     """
